@@ -187,7 +187,3 @@ FastAPI returns:
 
 ---
 
-
-
-```
-```
