@@ -11,7 +11,7 @@ The API:
 ---
 
 # Project Structure
-
+```bash
 project/
 │
 ├── main.py
@@ -23,7 +23,7 @@ project/
 │   └── best_model_resnet101.pth
 │
 ├── outputs/
-
+```
 ---
 
 # Technologies Used
