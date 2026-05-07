@@ -1,4 +1,3 @@
-````md id="jlwm77"
 # FastAPI Image Segmentation API
 
 This project is a FastAPI-based AI segmentation API using a trained DeepLabV3+ ResNet101 model.
@@ -13,7 +12,6 @@ The API:
 
 # Project Structure
 
-```bash
 project/
 │
 ├── main.py
