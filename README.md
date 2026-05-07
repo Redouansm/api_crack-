@@ -23,7 +23,6 @@ project/
 │   └── best_model_resnet101.pth
 │
 ├── outputs/
-````
 
 ---
 
