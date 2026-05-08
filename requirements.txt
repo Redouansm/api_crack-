@@ -1,9 +1,15 @@
 fastapi==0.135.3
 uvicorn==0.44.0
+
 torch==2.9.0
 torchvision==0.24.0
+torch-directml
+
 numpy==2.2.0
 pillow==11.2.1
+
 python-multipart==0.0.20
+
 segmentation-models-pytorch==0.5.0
+
 opencv-python==4.12.0.88
