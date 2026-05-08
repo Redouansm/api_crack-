@@ -7,18 +7,11 @@ from PIL import Image
 import torch
 import torchvision.transforms as transforms
 import segmentation_models_pytorch as smp
-import torch_directml
+
+import openvino as ov
 
 import numpy as np
 import os
-
-# =====================================
-# DEVICE iGPU (Intel GPU via DirectML)
-# =====================================
-
-device = torch_directml.device()
-
-print("Using device:", device)
 
 # =====================================
 # FASTAPI
@@ -40,10 +33,22 @@ app.mount(
 )
 
 # =====================================
+# OPENVINO DEVICE
+# =====================================
+
+core = ov.Core()
+
+print("Available devices:")
+print(core.available_devices)
+
+device_name = "GPU" if "GPU" in core.available_devices else "CPU"
+
+print("Using device:", device_name)
+
+# =====================================
 # LOAD MODEL
 # =====================================
 
-# Recréer EXACTEMENT le modèle entraîné
 model = smp.DeepLabV3Plus(
     encoder_name="resnet101",
     encoder_weights=None,
@@ -51,22 +56,46 @@ model = smp.DeepLabV3Plus(
     classes=1
 )
 
-# Charger checkpoint
 checkpoint = torch.load(
     "model/best_model_resnet101.pth",
-    map_location=device
+    map_location="cpu"
 )
 
-# Charger poids
 model.load_state_dict(
     checkpoint["model_state_dict"]
 )
 
-# Envoyer modèle vers iGPU
-model.to(device)
-
-# Mode inference
 model.eval()
+
+print("✅ PyTorch model loaded")
+
+# =====================================
+# CONVERT TO OPENVINO
+# =====================================
+
+dummy_input = torch.randn(1, 3, 512, 512)
+
+ov_model = ov.convert_model(
+    model,
+    example_input=dummy_input
+)
+
+# =====================================
+# COMPILE MODEL FOR iGPU
+# =====================================
+
+compiled_model = core.compile_model(
+    model=ov_model,
+    device_name=device_name,
+    config={
+        "PERFORMANCE_HINT": "LATENCY"
+    }
+)
+
+print("✅ OpenVINO model compiled")
+
+# Output layer
+output_layer = compiled_model.output(0)
 
 # =====================================
 # IMAGE TRANSFORM
@@ -85,7 +114,7 @@ transform = transforms.Compose([
 def home():
 
     return {
-        "message": "FastAPI segmentation API is running on iGPU"
+        "message": f"FastAPI segmentation API is running on {device_name}"
     }
 
 # =====================================
@@ -101,10 +130,8 @@ async def predict(file: UploadFile = File(...)):
 
     filename = file.filename
 
-    # Nom sans extension
     base_name = os.path.splitext(filename)[0]
 
-    # Extension
     extension = os.path.splitext(filename)[1]
 
     # =====================================
@@ -116,43 +143,59 @@ async def predict(file: UploadFile = File(...)):
     original_size = image.size
 
     # =====================================
-    # SAVE ORIGINAL IMAGE
-    # =====================================
-
-    original_filename = f"{base_name}_original{extension}"
-
-    original_path = os.path.join(
-        "outputs",
-        original_filename
-    )
-
-    image.save(original_path)
-
-    # =====================================
     # PREPROCESSING
     # =====================================
 
-    input_tensor = transform(image).unsqueeze(0).to(device)
+    input_tensor = transform(image).unsqueeze(0)
+
+    # Tensor -> numpy
+    input_numpy = input_tensor.numpy()
 
     # =====================================
-    # PREDICTION
+    # OPENVINO INFERENCE
     # =====================================
 
-    with torch.no_grad():
+    result = compiled_model([input_numpy])
 
-        output = model(input_tensor)
+    output = result[output_layer]
+
+    # =====================================
+    # SIGMOID
+    # =====================================
+
+    output = 1 / (1 + np.exp(-output))
 
     # =====================================
     # CREATE MASK
     # =====================================
 
-    output = torch.sigmoid(output)
+    mask = output.squeeze()
 
-    # Retour CPU avant numpy
-    mask = output.squeeze().cpu().numpy()
-
-    # Threshold
     mask = (mask > 0.5).astype(np.uint8)
+
+    # =====================================
+    # CONDITION POSITIVE / NEGATIVE
+    # =====================================
+
+    positive_pixels = np.sum(mask)
+
+    THRESHOLD = 500
+
+    # =====================================
+    # SI NEGATIVE → RETURN RIEN
+    # =====================================
+
+    if positive_pixels <= THRESHOLD:
+
+        return JSONResponse({
+            "prediction": "negative"
+        })
+
+    # =====================================
+    # SI POSITIVE → CONTINUER
+    # =====================================
+
+    prediction = "positive"
 
     # =====================================
     # SAVE MASK IMAGE
@@ -160,7 +203,6 @@ async def predict(file: UploadFile = File(...)):
 
     mask_image = Image.fromarray(mask * 255)
 
-    # Resize taille originale
     mask_image = mask_image.resize(original_size)
 
     mask_filename = f"{base_name}_mask.png"
@@ -182,10 +224,8 @@ async def predict(file: UploadFile = File(...)):
 
     overlay = original_np.copy()
 
-    # Rouge sur zones segmentées
     overlay[mask_np > 0] = [255, 0, 0]
 
-    # Mélange image + overlay
     blended = (
         0.6 * original_np +
         0.4 * overlay
@@ -208,8 +248,7 @@ async def predict(file: UploadFile = File(...)):
 
     return JSONResponse({
 
-        "original_image":
-        f"http://127.0.0.1:8000/outputs/{original_filename}",
+        "prediction": prediction,
 
         "mask_image":
         f"http://127.0.0.1:8000/outputs/{mask_filename}",
