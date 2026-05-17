@@ -1,0 +1,10 @@
+services:
+  fastapi-ai:
+    build: .
+
+    container_name: fastapi-ai
+
+    ports:
+      - "8888:8000"
+
+    restart: unless-stopped
