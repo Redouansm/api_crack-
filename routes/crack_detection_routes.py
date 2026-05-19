@@ -8,6 +8,7 @@ from io import BytesIO
 
 import uuid
 import os
+import json
 
 from services.crack_detection_service import (
     process_crack_detection
@@ -47,7 +48,7 @@ async def predict_crack(request: Request):
                 BytesIO(content)
             ).convert("RGB")
 
-            result = process_crack_detection(
+            response = process_crack_detection(
                 image=image
             )
 
@@ -55,7 +56,7 @@ async def predict_crack(request: Request):
             # NO CRACK
             # =====================================
 
-            if result is None:
+            if response is None:
 
                 body += (
                     f"--{boundary}\r\n"
@@ -69,7 +70,13 @@ async def predict_crack(request: Request):
                 continue
 
             # =====================================
-            # CRACK DETECTED
+            # DESTRUCTURE TUPLE
+            # =====================================
+
+            image_buffer, criticite_result = response
+
+            # =====================================
+            # CRACK DETECTED — IMAGE SEGMENTEE
             # =====================================
 
             original_name = (
@@ -93,11 +100,29 @@ async def predict_crack(request: Request):
                 f"\r\n"
             ).encode()
 
-            raw = result.getvalue()
+            raw = image_buffer.getvalue()
             print(f"first bytes hex: {raw[:10].hex()}")
             body += raw
 
             body += b"\r\n"
+
+            # =====================================
+            # CRITICITE
+            # =====================================
+
+            criticite_json = json.dumps(
+                criticite_result,
+                ensure_ascii=False
+            )
+
+            body += (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/json\r\n"
+                f'Content-Disposition: form-data; '
+                f'name="{image_id}_criticite"\r\n'
+                f"\r\n"
+                f"{criticite_json}\r\n"
+            ).encode()
 
         except Exception as e:
 

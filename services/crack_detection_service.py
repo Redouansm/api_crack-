@@ -4,15 +4,14 @@ import numpy as np
 
 from io import BytesIO
 
-from ai.model_loader import (
-    load_model
-)
+from ai.model_loader import load_model
+from services.crack_criticality_service import process_criticite
 
 # =====================================
 # CONFIG
 # =====================================
 
-INPUT_SIZE = 512
+INPUT_SIZE = 448
 
 THRESHOLD = 0.95
 
@@ -285,6 +284,14 @@ def process_crack_detection(image):
         return None
 
     # =====================================
+    # CRITICITE
+    # =====================================
+
+    criticite_result = process_criticite(
+        image_rgb
+    )
+
+    # =====================================
     # OVERLAY
     # =====================================
 
@@ -342,6 +349,9 @@ def process_crack_detection(image):
         ]
     )
 
-    return BytesIO(
-        encoded.tobytes()
+    return (
+        BytesIO(encoded.tobytes()),
+        criticite_result
     )
+
+
