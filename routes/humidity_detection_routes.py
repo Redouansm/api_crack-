@@ -1,157 +1,82 @@
-from fastapi import APIRouter
-from fastapi import Request
-
-from fastapi.responses import (
-    Response
-)
+from fastapi import APIRouter, Request
+from fastapi.responses import Response
 
 from PIL import Image
-
 from io import BytesIO
 
 import uuid
 import os
+import json
 
-from services.humidity_detection_service import (
-    process_humidity_detection
-)
+from services.humidity_detection_service import process_humidity_detection
 
-# =====================================
-# ROUTER
-# =====================================
+router = APIRouter()
 
-router = APIRouter(
-
-    tags=["Humidity Detection"]
-)
-
-
-# =====================================
-# PREDICT
-# =====================================
 
 @router.post("/predict")
 async def predict_humidity(request: Request):
 
-    # =====================================
-    # RECEIVE FORM DATA
-    # =====================================
-
-    form = await request.form()
-
-    # =====================================
-    # MULTIPART BOUNDARY
-    # =====================================
-
+    form     = await request.form()
     boundary = uuid.uuid4().hex
-
-    body = b""
-
-    # =====================================
-    # LOOP THROUGH IMAGES
-    # =====================================
+    body     = b""
 
     for image_id, upload_file in form.items():
 
+        if not hasattr(upload_file, "read"):
+            continue
+
         try:
 
-            # =====================================
-            # READ IMAGE
-            # =====================================
-
             content = await upload_file.read()
+            image   = Image.open(BytesIO(content)).convert("RGB")
 
-            image = Image.open(
-                BytesIO(content)
-            ).convert("RGB")
-
-            # =====================================
-            # PROCESS DETECTION
-            # =====================================
-
-            result = process_humidity_detection(
-                image=image
+            response = process_humidity_detection(
+                image=image,
+                image_bytes=content,
             )
 
-            # =====================================
-            # NO HUMIDITY
-            # RETURN ONLY IMAGE ID
-            # =====================================
-
-            if result is None:
-
+            if response is None:
                 body += (
                     f"--{boundary}\r\n"
                     f"Content-Type: text/plain\r\n"
-                    f'Content-Disposition: form-data; '
-                    f'name="{image_id}"\r\n'
+                    f'Content-Disposition: form-data; name="{image_id}"\r\n'
                     f"\r\n"
-                    f"{image_id}\r\n"
+                    f"no_humidity\r\n"
                 ).encode()
-
                 continue
 
-            # =====================================
-            # HUMIDITY DETECTED
-            # RETURN IMAGE + ID
-            # =====================================
+            image_buffer, criticite_result = response
 
-            original_name = (
-                upload_file.filename
-            )
-
-            base_name = os.path.splitext(
-                original_name
-            )[0]
-
-            filename = (
-                f"{base_name}_segmented.jpg"
-            )
+            base_name = os.path.splitext(upload_file.filename)[0]
+            filename  = f"{base_name}_segmented.jpg"
 
             body += (
                 f"--{boundary}\r\n"
                 f"Content-Type: image/jpeg\r\n"
-                f'Content-Disposition: form-data; '
-                f'name="{image_id}"; '
-                f'filename="{filename}"\r\n'
+                f'Content-Disposition: form-data; name="{image_id}"; filename="{filename}"\r\n'
                 f"\r\n"
             ).encode()
-
-            body += result.getvalue()
-
+            body += image_buffer.getvalue()
             body += b"\r\n"
 
+            body += (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/json\r\n"
+                f'Content-Disposition: form-data; name="{image_id}_criticite"\r\n'
+                f"\r\n"
+                f"{json.dumps(criticite_result, ensure_ascii=False)}\r\n"
+            ).encode()
+
         except Exception as e:
-
-            print(
-                f"Error processing image "
-                f"{image_id}: {e}"
-            )
-
+            print(f"Error processing image {image_id}: {e}")
             continue
 
         finally:
-
             await upload_file.close()
 
-    # =====================================
-    # CLOSE MULTIPART
-    # =====================================
-
-    body += (
-        f"--{boundary}--\r\n"
-    ).encode()
-
-    # =====================================
-    # RETURN RESPONSE
-    # =====================================
+    body += f"--{boundary}--\r\n".encode()
 
     return Response(
-
         content=body,
-
-        media_type=(
-            f"multipart/mixed; "
-            f"boundary={boundary}"
-        )
+        media_type=f"multipart/form-data; boundary={boundary}"
     )

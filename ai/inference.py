@@ -1,7 +1,8 @@
+import cv2
+import numpy as np
 import torch
 
 from ai.model_loader import load_model
-
 def predict(
     input_tensor,
     model_name
@@ -100,339 +101,94 @@ def predict(
 #------------------------------------------------------------------------------#
 #                                   HUMIDITY                                   #          
 #------------------------------------------------------------------------------#
-import cv2
-import numpy as np
 
-PALETTE_PROFILES = {
-    "iron": [
-        {
-            "lower": np.array([140, 80, 20]),
-            "upper": np.array([179, 255, 255])
-        },
-
-        {
-            "lower": np.array([100, 80, 20]),
-            "upper": np.array([140, 255, 200])
-        },
-    ],
-
-    "rainbow": [
-        {
-            "lower": np.array([85, 80, 20]),
-            "upper": np.array([140, 255, 230])
-        },
-    ],
-
-    "auto": [
-        {
-            "lower": np.array([85, 80, 20]),
-            "upper": np.array([179, 255, 255])
-        },
-    ],
-}
-
-SENSITIVITY_CONFIGS = {
-
-    "low": {
-        "min_area": 2000,
-        "kernel": 9,
-        "iterations": 3
-    },
-
-    "medium": {
-        "min_area": 500,
-        "kernel": 9,
-        "iterations": 3
-    },
-
-    "high": {
-        "min_area": 200,
-        "kernel": 5,
-        "iterations": 2
-    },
-}
-
-UI_EXCLUSION = {
-    "x_max": 200,
-    "y_max": 160
-}
-
-def is_ui_zone(cnt):
-
-    x, y, w, h = cv2.boundingRect(cnt)
-
-    cx = x + w // 2
-    cy = y + h // 2
-
-    return (
-        cx < UI_EXCLUSION["x_max"]
-        and
-        cy < UI_EXCLUSION["y_max"]
-    )
-
-def merge_overlapping_bboxes(
-    zones,
-    margin=2
-):
-
-    if not zones:
-        return zones
-
-    def expand(b, m):
-
-        return (
-            b[0]-m,
-            b[1]-m,
-            b[2]+2*m,
-            b[3]+2*m
-        )
-
-    def overlaps(b1, b2):
-
-        x1,y1,w1,h1 = b1
-        x2,y2,w2,h2 = b2
-
-        return not (
-
-            x1+w1 < x2
-            or
-            x2+w2 < x1
-            or
-            y1+h1 < y2
-            or
-            y2+h2 < y1
-        )
-
-    def union(b1, b2):
-
-        x = min(b1[0], b2[0])
-        y = min(b1[1], b2[1])
-
-        x2 = max(
-            b1[0]+b1[2],
-            b2[0]+b2[2]
-        )
-
-        y2 = max(
-            b1[1]+b1[3],
-            b2[1]+b2[3]
-        )
-
-        return (
-            x,
-            y,
-            x2-x,
-            y2-y
-        )
-
-    bboxes = [z["bbox"] for z in zones]
-    areas = [z["area"] for z in zones]
-    confs = [z["confidence"] for z in zones]
-    contours = [z["contour"] for z in zones]
-
-    changed = True
-
-    while changed:
-
-        changed = False
-
-        used = [False] * len(bboxes)
-
-        nb, na, nc, nct = [], [], [], []
-
-        for i in range(len(bboxes)):
-
-            if used[i]:
-                continue
-
-            cb, ca, cc, cct = (
-                bboxes[i],
-                areas[i],
-                confs[i],
-                [contours[i]]
-            )
-
-            for j in range(i+1, len(bboxes)):
-
-                if used[j]:
-                    continue
-
-                if overlaps(
-                    expand(cb, margin),
-                    expand(bboxes[j], margin)
-                ):
-
-                    new_area = ca + areas[j]
-
-                    cc = (
-                        cc * ca
-                        +
-                        confs[j] * areas[j]
-                    ) / new_area
-
-                    ca = new_area
-
-                    cb = union(
-                        cb,
-                        bboxes[j]
-                    )
-
-                    cct.append(contours[j])
-
-                    used[j] = True
-
-                    changed = True
-
-            nb.append(cb)
-            na.append(ca)
-            nc.append(round(cc, 3))
-            nct.append(np.vstack(cct))
-
-        bboxes, areas, confs, contours = (
-            nb,
-            na,
-            nc,
-            nct
-        )
-
-    result = [
-
-        {
-            "bbox": b,
-            "area": a,
-            "confidence": c,
-            "contour": ct
-        }
-
-        for b, a, c, ct in zip(
-            bboxes,
-            areas,
-            confs,
-            contours
-        )
-    ]
-
-    result.sort(
-        key=lambda z: z["area"],
-        reverse=True
-    )
-
-    return result
-
-def predict_humidity(
+# ─────────────────────────────────────────────────────────────────────────────
+# HUMIDITY — détection depuis image thermique FLIR (palette Iron)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Palette Iron FLIR C5 :
+#   Chaud  → jaune/orange/rouge  (H: 0-30,  V: élevé)
+#   Froid  → violet/bleu/noir    (H: 100-165, V: faible)
+#
+# Les zones humides absorbent l'humidité et sont plus froides que
+# les surfaces sèches environnantes → elles apparaissent en violet/bleu.
+#
+# Deux masques :
+#   M1 : violet/bleu froid  H:100-165, S:>60, V:<160
+#   M2 : très froid/noir    H:0-30,    S:>150, V:<100  (extrême froid Iron)
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+def predict_humidity_hsv(
     hsv,
     palette="iron",
     sensitivity="medium",
     min_area=None,
-    merge_margin=5
 ):
-
-    cfg = SENSITIVITY_CONFIGS[sensitivity]
-
-    k = cfg["kernel"]
-
-    iters = cfg["iterations"]
-
-    area_thresh = (
-        min_area
-        if min_area is not None
-        else cfg["min_area"]
-    )
-
-    profiles = PALETTE_PROFILES.get(
-        palette,
-        PALETTE_PROFILES["iron"]
-    )
-
-    mask = np.zeros(
-        hsv.shape[:2],
-        dtype=np.uint8
-    )
-
-    for p in profiles:
-
-        m = cv2.inRange(
-            hsv,
-            p["lower"],
-            p["upper"]
-        )
-
-        mask = cv2.bitwise_or(
-            mask,
-            m
-        )
-
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (k, k)
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        kernel,
-        iterations=iters
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        kernel,
-        iterations=1
-    )
-
+ 
+    img_h, img_w = hsv.shape[:2]
+    img_area     = img_h * img_w
+ 
+    # ── Masques couleur froid (palette Iron) ─────────────────────────────────
+    # M1 : violet → bleu (zones humides typiques)
+    m1 = cv2.inRange(hsv, np.array([100, 60, 10]), np.array([165, 255, 160]))
+    # M2 : rouge très sombre → noir (zones très froides)
+    m2 = cv2.inRange(hsv, np.array([0, 150, 10]), np.array([30, 255, 100]))
+ 
+    mask = cv2.bitwise_or(m1, m2)
+ 
+    # ── Exclure les éléments UI FLIR ─────────────────────────────────────────
+    # Haut 12%  : température + logo FLIR
+    # Gauche 15%: barre de palette + température min/max
+    # Droite 10%: artefacts bord
+    # Bas 8%    : artefacts bord bas
+    mask[:int(img_h * 0.12), :]    = 0
+    mask[int(img_h * 0.92):, :]    = 0
+    mask[:, :int(img_w * 0.15)]    = 0
+    mask[:, int(img_w * 0.90):]    = 0
+ 
+    # ── Morphologie : fermer les trous, supprimer le bruit ───────────────────
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
+    mask   = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=1)
+ 
+    # ── Contours ─────────────────────────────────────────────────────────────
     contours, _ = cv2.findContours(
-        mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
-
+ 
+    # Taille minimum : 1% de l'image (robuste aux différentes résolutions)
+    area_min = max(
+        min_area if min_area is not None else 0,
+        int(img_area * 0.01),
+    )
+ 
     zones = []
-
+ 
     for cnt in contours:
-
+ 
         area = cv2.contourArea(cnt)
-
-        if area < area_thresh:
+ 
+        if area < area_min:
             continue
-
-        if is_ui_zone(cnt):
-            continue
-
+ 
         x, y, w, h = cv2.boundingRect(cnt)
-
+ 
         roi_mask = mask[y:y+h, x:x+w]
-
-        density = (
-            np.sum(roi_mask > 0)
-            /
-            (w * h)
-        )
-
-        confidence = round(
-            float(density),
-            3
-        )
-
+        density  = np.sum(roi_mask > 0) / max(w * h, 1)
+ 
         zones.append({
-
-            "bbox": (x,y,w,h),
-
-            "area": int(area),
-
-            "confidence": confidence,
-
-            "contour": cnt
+            "bbox":       (x, y, w, h),
+            "area":       int(area),
+            "confidence": round(float(density), 3),
+            "contour":    cnt,
         })
-
-    zones.sort(
-        key=lambda z: z["area"],
-        reverse=True
-    )
-
-    zones = merge_overlapping_bboxes(
-        zones,
-        margin=merge_margin
-    )
-
+ 
+    zones.sort(key=lambda z: z["area"], reverse=True)
+ 
+    # ── Filtrer les micro-zones vs la plus grande ─────────────────────────────
+    # Toute zone < 25% de la plus grande est du bruit (ex: petites boxes en haut)
+    if len(zones) > 1:
+        max_area = zones[0]["area"]
+        zones    = [z for z in zones if z["area"] >= max_area * 0.25]
+ 
     return zones, mask

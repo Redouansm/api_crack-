@@ -20,137 +20,88 @@ router = APIRouter()
 @router.post("/predict")
 async def predict_crack(request: Request):
 
-    # =====================================
-    # RECEIVE FORM DATA
-    # =====================================
-
     form = await request.form()
 
-    # =====================================
-    # MULTIPART BOUNDARY
-    # =====================================
+    # ── Collecter les dates envoyées par le frontend ──────────────────────────
+    dates_map = {}
+    for key, val in form.items():
+        if key.endswith("__date__") and not hasattr(val, "read"):
+            image_name = key.replace("__date__", "")
+            dates_map[image_name] = str(val)
+    print(f"[crack_route] dates_map = {dates_map}")
+    print(f"[crack_route] form keys = {list(form.keys())}")
 
     boundary = uuid.uuid4().hex
-
-    body = b""
-
-    # =====================================
-    # LOOP THROUGH IMAGES
-    # =====================================
+    body     = b""
 
     for image_id, upload_file in form.items():
+
+        # Ignorer les champs texte
+        if not hasattr(upload_file, "read"):
+            continue
 
         try:
 
             content = await upload_file.read()
+            image   = Image.open(BytesIO(content)).convert("RGB")
 
-            image = Image.open(
-                BytesIO(content)
-            ).convert("RGB")
+            # Date depuis le frontend ou depuis les EXIF
+            date_from_client = dates_map.get(upload_file.filename or image_id, "")
 
             response = process_crack_detection(
-                image=image
+                image=image,
+                image_bytes=content,
+                filename=upload_file.filename or "",
+                date_client=date_from_client,
             )
 
-            # =====================================
-            # NO CRACK
-            # =====================================
-
             if response is None:
-
                 body += (
                     f"--{boundary}\r\n"
                     f"Content-Type: text/plain\r\n"
-                    f'Content-Disposition: form-data; '
-                    f'name="{image_id}"\r\n'
+                    f'Content-Disposition: form-data; name="{image_id}"\r\n'
                     f"\r\n"
                     f"no_crack\r\n"
                 ).encode()
-
                 continue
-
-            # =====================================
-            # DESTRUCTURE TUPLE
-            # =====================================
 
             image_buffer, criticite_result = response
 
-            # =====================================
-            # CRACK DETECTED — IMAGE SEGMENTEE
-            # =====================================
-
-            original_name = (
-                upload_file.filename
-            )
-
-            base_name = os.path.splitext(
-                original_name
-            )[0]
-
-            filename = (
-                f"{base_name}_segmented.jpg"
-            )
+            base_name = os.path.splitext(upload_file.filename)[0]
+            filename  = f"{base_name}_segmented.jpg"
 
             body += (
                 f"--{boundary}\r\n"
                 f"Content-Type: image/jpeg\r\n"
-                f'Content-Disposition: form-data; '
-                f'name="{image_id}"; '
-                f'filename="{filename}"\r\n'
+                f'Content-Disposition: form-data; name="{image_id}"; filename="{filename}"\r\n'
                 f"\r\n"
             ).encode()
 
             raw = image_buffer.getvalue()
             print(f"first bytes hex: {raw[:10].hex()}")
             body += raw
-
             body += b"\r\n"
 
-            # =====================================
-            # CRITICITE
-            # =====================================
-
-            criticite_json = json.dumps(
-                criticite_result,
-                ensure_ascii=False
-            )
+            criticite_json = json.dumps(criticite_result, ensure_ascii=False)
 
             body += (
                 f"--{boundary}\r\n"
                 f"Content-Type: application/json\r\n"
-                f'Content-Disposition: form-data; '
-                f'name="{image_id}_criticite"\r\n'
+                f'Content-Disposition: form-data; name="{image_id}_criticite"\r\n'
                 f"\r\n"
                 f"{criticite_json}\r\n"
             ).encode()
 
         except Exception as e:
-
-            print(
-                f"Error processing image "
-                f"{image_id}: {e}"
-            )
-
+            print(f"Error processing image {image_id}: {e}")
             continue
 
         finally:
-
             await upload_file.close()
 
-    # =====================================
-    # CLOSE MULTIPART
-    # =====================================
-
-    body += (
-        f"--{boundary}--\r\n"
-    ).encode()
+    body += f"--{boundary}--\r\n".encode()
 
     return Response(
-
         content=body,
-
-        media_type=(
-            f"multipart/form-data; "
-            f"boundary={boundary}"
-        )
+        media_type=f"multipart/form-data; boundary={boundary}"
     )
