@@ -52,6 +52,7 @@ def process_criticite(image_rgb, image_bytes=None, filename="", date_client=""):
 
     return {
         "date_taken": date_taken,
-        "classe":     result["Criticité"],
+        "classe":     "crack",
+        "criticite":  result["Criticité"],
         "confidence": result["confidence"],
     }

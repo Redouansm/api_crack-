@@ -245,7 +245,7 @@ def build_criticite_result(zones: list, meta: dict, params: dict) -> dict:
     ]
 
     score_moyen   = round(sum(z["score"] for z in zones) / len(zones)) if zones else 0
-    ORDRE         = {"CRITIQUE": 4, "ÉLEVÉ": 3, "MODÉRÉ": 2, "FAIBLE": 1}
+    ORDRE         = {"CRITIQUE": 3, "MOYEN": 2, "FAIBLE": 1}
     criticite_max = max(zones_list, key=lambda z: ORDRE.get(z["criticite"], 0))["criticite"] if zones_list else "FAIBLE"
 
     return {
@@ -272,9 +272,8 @@ def build_hsv_criticite_result(zones: list, meta: dict) -> dict:
 
         score = int(z["confidence"] * 100)
 
-        if   score >= 70: niveau = "CRITIQUE"
-        elif score >= 45: niveau = "ÉLEVÉ"
-        elif score >= 25: niveau = "MODÉRÉ"
+        if   score >= 67: niveau = "CRITIQUE"
+        elif score >= 34: niveau = "MOYEN"
         else:             niveau = "FAIBLE"
 
         zones_list.append({
@@ -284,7 +283,7 @@ def build_hsv_criticite_result(zones: list, meta: dict) -> dict:
         })
 
     score_moyen   = round(sum(z["score"] for z in zones_list) / len(zones_list)) if zones_list else 0
-    ORDRE         = {"CRITIQUE": 4, "ÉLEVÉ": 3, "MODÉRÉ": 2, "FAIBLE": 1}
+    ORDRE         = {"CRITIQUE": 3, "MOYEN": 2, "FAIBLE": 1}
     criticite_max = max(zones_list, key=lambda z: ORDRE.get(z["criticite"], 0))["criticite"] if zones_list else "FAIBLE"
 
     return {

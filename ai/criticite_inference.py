@@ -8,9 +8,9 @@ from ai.criticite_model_loader import load_model
 # =====================================
 
 CLASS_NAMES = {
-    0: "Haute",
-    1: "Modérée",
-    2: "Très Haute"
+    0: "FAIBLE",
+    1: "MOYEN",
+    2: "CRITIQUE"
 }
 
 # =====================================

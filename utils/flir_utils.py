@@ -374,9 +374,8 @@ def fusionner_zones_proches(zones, temp_c, infos, params, distance_max=40):
         s_g   = min(30, int(_grad_m / max(seuil_g, 1e-9) * 15))
         score = s_d + s_s + s_g
 
-        if   score >= 70: niveau, couleur = "CRITIQUE", (255, 34,  34)
-        elif score >= 45: niveau, couleur = "ÉLEVÉ",    (255, 136, 0)
-        elif score >= 25: niveau, couleur = "MODÉRÉ",   (255, 221, 0)
+        if   score >= 67: niveau, couleur = "CRITIQUE", (255, 34,  34)
+        elif score >= 34: niveau, couleur = "MOYEN",    (255, 165, 0)
         else:             niveau, couleur = "FAIBLE",   (136, 255, 0)
 
         nouvelles_zones.append({
@@ -525,9 +524,8 @@ def run_detection_pipeline(
         s_g   = min(30, int(_grad_m / max(seuil_g, 1e-9) * 15))
         score = s_d + s_s + s_g
 
-        if   score >= 70: niveau, couleur = "CRITIQUE", (255, 34,  34)
-        elif score >= 45: niveau, couleur = "ÉLEVÉ",    (255, 136, 0)
-        elif score >= 25: niveau, couleur = "MODÉRÉ",   (255, 221, 0)
+        if   score >= 67: niveau, couleur = "CRITIQUE", (255, 34,  34)
+        elif score >= 34: niveau, couleur = "MOYEN",    (255, 165, 0)
         else:             niveau, couleur = "FAIBLE",   (136, 255, 0)
 
         zones.append({
