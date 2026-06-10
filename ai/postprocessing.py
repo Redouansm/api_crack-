@@ -248,11 +248,13 @@ def build_criticite_result(zones: list, meta: dict, params: dict) -> dict:
     ORDRE         = {"CRITIQUE": 3, "MOYEN": 2, "FAIBLE": 1}
     criticite_max = max(zones_list, key=lambda z: ORDRE.get(z["criticite"], 0))["criticite"] if zones_list else "FAIBLE"
 
+    confidence = score_moyen / 100.0
+
     return {
-        "date_taken":    date_taken,
-        "class":         "humidite",
-        "score_moyen":   score_moyen,
-        "criticite_max": criticite_max,
+        "date_taken": date_taken,
+        "classe":     "humidity",
+        "criticite":  criticite_max,
+        "confidence": round(confidence, 2),
     }
 
 
@@ -285,10 +287,11 @@ def build_hsv_criticite_result(zones: list, meta: dict) -> dict:
     score_moyen   = round(sum(z["score"] for z in zones_list) / len(zones_list)) if zones_list else 0
     ORDRE         = {"CRITIQUE": 3, "MOYEN": 2, "FAIBLE": 1}
     criticite_max = max(zones_list, key=lambda z: ORDRE.get(z["criticite"], 0))["criticite"] if zones_list else "FAIBLE"
+    confidence    = score_moyen / 100.0
 
     return {
-        "date_taken":    date_taken,
-        "class":         "humidite",
-        "score_moyen":   score_moyen,
-        "criticite_max": criticite_max,
+        "date_taken": date_taken,
+        "classe":     "humidity",
+        "criticite":  criticite_max,
+        "confidence": round(confidence, 2),
     }

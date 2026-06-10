@@ -27,5 +27,5 @@ app.include_router(
 def home():
 
     return {
-        "message": "AI API running hhhhhhhhhhhhhhhhhhhhh"
+        "message": "AI API running"
             }
