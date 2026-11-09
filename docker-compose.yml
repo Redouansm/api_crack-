@@ -1,10 +1,22 @@
+# 1re fois :            docker compose up -d --build
+# Ensuite :             docker compose up -d
+# Prérequis : driver NVIDIA + NVIDIA Container Toolkit installés sur l'hôte.
 services:
   fastapi-ai:
     build: .
-
+    image: ai-inspection-inference:latest
     container_name: fastapi-ai
-
     ports:
       - "8888:8000"
-
     restart: unless-stopped
+
+    volumes:
+      - ./models:/app/models:ro       # poids lus depuis votre disque, pas copiés dans l'image
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -568,3 +568,147 @@ def run_detection_pipeline(
     zones = fusionner_zones_proches(zones, temp_c, infos, params, distance_max=15)
 
     return zones, infos
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEMPÉRATURE ROBUSTE  (corrige l'ordre des octets du PNG FLIR)
+# ─────────────────────────────────────────────────────────────────────────────
+# Le RawThermalImage des FLIR (ex : C5) est souvent un PNG 16 bits stocké
+# avec les octets inversés. Sans byteswap, les températures sont fausses.
+# On teste les deux versions et on garde celle qui donne des températures
+# physiquement plausibles.
+
+def _temperature_plausible(temp_c) -> float:
+    """Score de plausibilité : part de pixels valides dans [-40, 150] °C."""
+    if temp_c is None:
+        return 0.0
+    valid = np.isfinite(temp_c) & (temp_c > -40) & (temp_c < 150)
+    return float(valid.mean())
+
+
+def temperature_celsius(raw: np.ndarray, meta: dict) -> np.ndarray | None:
+
+    if raw is None:
+        return None
+
+    raw_u16     = np.clip(raw, 0, 65535).astype(np.uint16)
+    raw_swapped = raw_u16.byteswap().astype(np.float64)
+
+    est_png = str(meta.get("RawThermalImageType", "")).upper() == "PNG"
+    ordre   = [raw_swapped, raw] if est_png else [raw, raw_swapped]
+
+    meilleur, meilleur_score = None, 0.0
+
+    for candidat in ordre:
+        temp = raw_to_celsius(candidat, meta)
+        score = _temperature_plausible(temp)
+        if score > meilleur_score:
+            meilleur, meilleur_score = temp, score
+        if score > 0.99:
+            break
+
+    return meilleur if meilleur_score > 0.5 else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PHOTO VISIBLE (caméra RGB) EMBARQUÉE + ALIGNEMENT SUR LA THERMIQUE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_embedded_visible(image_bytes: bytes) -> np.ndarray | None:
+    """
+    Vraie photo visible (RGB) embarquée dans le JPEG FLIR, en pleine
+    résolution, SANS redimensionnement. On ne prend que EmbeddedImage :
+    PreviewImage est le rendu thermique coloré, pas la photo.
+    """
+
+    if EXIFTOOL is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+
+    try:
+        r = subprocess.run(
+            [EXIFTOOL, "-b", "-EmbeddedImage", tmp_path],
+            capture_output=True,
+            timeout=15,
+        )
+        if not r.stdout or len(r.stdout) < 500:
+            return None
+        return np.array(Image.open(io.BytesIO(r.stdout)).convert("RGB"))
+
+    except Exception:
+        return None
+
+    finally:
+        os.unlink(tmp_path)
+
+
+def aligner_photo_visible(image_visible: np.ndarray, meta: dict, taille_sortie: tuple):
+    """
+    La photo visible voit une zone PLUS LARGE que la caméra thermique.
+    On découpe la zone vue par la thermique (Real2IR + OffsetX/OffsetY,
+    enregistrés par FLIR pour chaque image) puis on la met à la taille
+    de la grille thermique -> masque et photo se superposent pixel à pixel.
+
+    taille_sortie = (largeur, hauteur) de la grille thermique.
+    Retourne (image_alignée, aligné: bool).
+    """
+
+    real2ir = parse_float(meta.get("Real2IR"), 0)
+    if real2ir <= 0:
+        return cv2_resize(image_visible, taille_sortie), False
+
+    ox = parse_float(meta.get("OffsetX"), 0)
+    oy = parse_float(meta.get("OffsetY"), 0)
+
+    Hv, Wv = image_visible.shape[:2]
+    w, h   = Wv / real2ir, Hv / real2ir
+    cx, cy = Wv / 2 + ox, Hv / 2 + oy
+
+    x1 = int(round(cx - w / 2)); y1 = int(round(cy - h / 2))
+    x2 = x1 + int(round(w));     y2 = y1 + int(round(h))
+
+    # Cadre qui dépasse de la photo -> bords noirs (pas de décalage caché)
+    pad = max(0, -x1, -y1, x2 - Wv, y2 - Hv)
+    if pad:
+        image_visible = np.pad(
+            image_visible, ((pad, pad), (pad, pad), (0, 0)), mode="constant"
+        )
+        x1 += pad; x2 += pad; y1 += pad; y2 += pad
+
+    crop = image_visible[y1:y2, x1:x2]
+    return cv2_resize(crop, taille_sortie), True
+
+
+def cv2_resize(image: np.ndarray, taille: tuple) -> np.ndarray:
+    import cv2
+    return cv2.resize(image, taille, interpolation=cv2.INTER_CUBIC)
+
+
+def conditions_ambiantes(meta: dict, temp_air=None, humidite_relative=None):
+    """
+    Température de l'air (°C) et humidité relative (%) pour le point de rosée.
+    Priorité : valeurs envoyées par le client (mesurées sur site) > métadonnées
+    FLIR (souvent les valeurs par défaut de la caméra : 20 °C / 50 %).
+    Retourne (t_air, hr_pct, source).
+    """
+
+    if temp_air is not None and humidite_relative is not None:
+        return float(temp_air), float(humidite_relative), "client"
+
+    t_air = parse_float(meta.get("AtmosphericTemperature"), None)
+    hr    = parse_float(meta.get("RelativeHumidity"), None)
+
+    if t_air is None or hr is None:
+        return None, None, "absent"
+
+    if hr <= 1.0:          # certaines versions d'exiftool donnent une fraction
+        hr *= 100.0
+
+    if temp_air is not None:
+        t_air = float(temp_air)
+    if humidite_relative is not None:
+        hr = float(humidite_relative)
+
+    return t_air, hr, "metadonnees"

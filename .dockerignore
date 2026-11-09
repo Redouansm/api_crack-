@@ -1,0 +1,14 @@
+.git
+.gitignore
+.idea
+.vscode
+__pycache__/
+*.pyc
+venv/
+fastapivenv/
+.env/
+outputs/
+*.ipynb
+.ipynb_checkpoints/
+docker-compose*.yml
+README.md

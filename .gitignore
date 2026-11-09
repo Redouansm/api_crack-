@@ -5,13 +5,17 @@ venv/
 fastapivenv/
 .env/
 
-models/
+# Poids des modèles (trop lourds pour git) : models/<type>/...
+models/**
+!models/*/
+!models/*/.gitkeep
 
 outputs/
 
 .ipynb_checkpoints/
 
 *.pth
+*.pt
 *.onnx
 *.bin
 *.xml

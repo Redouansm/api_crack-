@@ -1,127 +1,119 @@
 import cv2
 import numpy as np
-import re
+from PIL import Image
 
-from PIL import Image, ExifTags
-from io import BytesIO
-from datetime import datetime
-
-from ai.preprocessing import preprocess_flir
-from ai.inference import predict_humidity_hsv
-from ai.postprocessing import (
-    merge_overlapping_bboxes,
-    draw_humidity_boxes,
-    create_bounding_boxes,
-    image_to_buffer,
-    build_criticite_result,
-    build_hsv_criticite_result,
+from ai.humidity_model import detecter_zones_froides, merge_overlapping_bboxes, predict_humidity_hsv
+from services.humidity_criticality_service import (
+    dessiner_zones,
+    dessiner_zones_hsv,
+    evaluer_zones,
+    point_de_rosee,
+    resume_criticite,
+    resume_criticite_hsv,
 )
+from utils.date_utils import resolve_date_taken
 from utils.flir_utils import (
+    aligner_photo_visible,
+    conditions_ambiantes,
+    extract_embedded_visible,
     extract_metadata,
     extract_raw_thermal,
-    extract_embedded_rgb,
-    raw_to_celsius,
-    extract_params,
-    run_detection_pipeline,
+    temperature_celsius,
 )
+from utils.image_utils import rgb_to_jpeg_buffer
 
 
-def _extract_date(filename: str, image_bytes: bytes) -> str:
-    """Même logique que crack_criticality_service."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline principal : FLIR radiométrique -> FastSAM -> criticité
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # ── 1. EXIF via Pillow ────────────────────────────────────────────────────
-    try:
-        img  = Image.open(BytesIO(image_bytes))
-        exif = img._getexif()
-        if exif:
-            tags = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
-            raw  = (
-                tags.get("DateTimeOriginal") or
-                tags.get("DateTime")         or
-                tags.get("DateTimeDigitized") or
-                ""
-            )
-            if raw:
-                return str(raw).strip()
-    except Exception:
-        pass
+def analyser_flir(image_bytes: bytes, temp_air=None, humidite_relative=None):
+    """
+    Retourne (image_annotée_rgb, résultat) ou None si aucune humidité,
+    ou False si l'image n'est pas un JPEG FLIR radiométrique.
+    """
 
-    # ── 2. Nom du fichier IMG_20260430_094400.jpg ─────────────────────────────
-    m = re.search(r"(\d{4})(\d{2})(\d{2})[_\-](\d{2})(\d{2})(\d{2})", filename)
-    if m:
-        y, mo, d, h, mi, s = m.groups()
-        return f"{y}:{mo}:{d} {h}:{mi}:{s}"
+    meta   = extract_metadata(image_bytes)
+    raw    = extract_raw_thermal(image_bytes)
+    temp_c = temperature_celsius(raw, meta) if raw is not None else None
 
-    return ""
+    if temp_c is None:
+        return False
 
+    # 1. Détection des zones froides (FastSAM ∩ bleu) sur la grille agrandie
+    detection = detecter_zones_froides(temp_c)
+    grid_h, grid_w = detection["temp_big"].shape
+
+    # 2. Criticité (ΔT local + point de rosée + surface)
+    t_air, hr, source = conditions_ambiantes(meta, temp_air, humidite_relative)
+    t_rosee = point_de_rosee(t_air, hr)
+    zones   = evaluer_zones(detection, t_rosee=t_rosee, source_rosee=source)
+
+    if not zones:
+        return None
+
+    # 3. Fond d'image : photo visible ALIGNÉE à la même taille que la grille
+    visible = extract_embedded_visible(image_bytes)
+    if visible is not None:
+        fond, aligne = aligner_photo_visible(visible, meta, (grid_w, grid_h))
+        type_fond = "photo_visible_alignee" if aligne else "photo_visible_non_alignee"
+    else:
+        fond      = cv2.cvtColor(detection["colored_bgr"], cv2.COLOR_BGR2RGB)
+        type_fond = "carte_thermique"
+
+    annotated = dessiner_zones(fond, zones)
+
+    result = resume_criticite(zones, t_air, hr, t_rosee, source)
+    result["detection"] = {
+        "sam_utilise": detection["sam_used"],
+        "nb_segments": detection["nb_segments"],
+        "fond_image":  type_fond,
+        "taille":      [grid_w, grid_h],
+    }
+
+    return annotated, result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Repli : image non radiométrique -> couleurs de la palette Iron (HSV)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def analyser_hsv(image: Image.Image):
+    zones, image_bgr = predict_humidity_hsv(np.array(image))
+    zones            = merge_overlapping_bboxes(zones, margin=40)
+
+    if not zones:
+        return None
+
+    annotated = cv2.cvtColor(dessiner_zones_hsv(image_bgr, zones), cv2.COLOR_BGR2RGB)
+    result    = resume_criticite_hsv(zones)
+    result["detection"] = {"methode": "hsv_sans_temperature"}
+
+    return annotated, result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Point d'entrée appelé par la route
+# ─────────────────────────────────────────────────────────────────────────────
 
 def process_humidity_detection(
     image: Image.Image,
     image_bytes: bytes = None,
     filename: str = "",
     date_client: str = "",
+    temp_air: float = None,
+    humidite_relative: float = None,
 ):
 
-    # ── Résolution de la date (même priorité que crack) ───────────────────────
-    date_taken = (
-        date_client.strip()
-        or _extract_date(filename, image_bytes or b"")
-        or datetime.now().strftime("%Y:%m:%d %H:%M:%S")
-    )
+    date_taken = resolve_date_taken(date_client, filename, image_bytes)
 
-    # ── Pipeline FLIR Planck ──────────────────────────────────────────────────
-    if image_bytes is not None:
+    sortie = analyser_flir(image_bytes, temp_air, humidite_relative) if image_bytes else False
 
-        meta = extract_metadata(image_bytes)
-        raw  = extract_raw_thermal(image_bytes)
+    if sortie is False:                       # pas de températures -> repli HSV
+        sortie = analyser_hsv(image)
 
-        if raw is not None:
-
-            temp_c = raw_to_celsius(raw, meta)
-
-            if temp_c is not None:
-
-                params = extract_params(meta)
-                zones, infos = run_detection_pipeline(temp_c, meta, params)
-
-                if not zones:
-                    return None
-
-                th_h, th_w = temp_c.shape
-
-                rgb = extract_embedded_rgb(
-                    image_bytes, shape_thermique=(th_h, th_w)
-                )
-                if rgb is None:
-                    img_arr = np.array(image.convert("RGB"))
-                    rgb = cv2.resize(
-                        img_arr, (th_w, th_h), interpolation=cv2.INTER_LANCZOS4
-                    )
-
-                annotated        = draw_humidity_boxes(rgb, zones, scale_x=1.0, scale_y=1.0)
-                criticite_result = build_criticite_result(zones, meta, params)
-
-                # ── Format identique à crack ──────────────────────────────────
-                criticite_result["date_taken"] = date_taken
-                criticite_result["classe"]     = "humidite"
-
-                return image_to_buffer(annotated), criticite_result
-
-    # ── Fallback HSV ──────────────────────────────────────────────────────────
-    meta = {}
-
-    image_bgr, hsv = preprocess_flir(image)
-    zones, mask    = predict_humidity_hsv(hsv)
-    zones          = merge_overlapping_bboxes(zones, margin=40)
-
-    if not zones:
+    if sortie is None:
         return None
 
-    annotated_bgr    = create_bounding_boxes(image_bgr, zones)
-    annotated_rgb    = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-    criticite_result = build_hsv_criticite_result(zones, meta)
-
-    # ── date_taken depuis priorité client > EXIF > fichier > now ───────────────
-    criticite_result["date_taken"] = date_taken
-
-    return image_to_buffer(annotated_rgb), criticite_result
+    annotated, result = sortie
+    return rgb_to_jpeg_buffer(annotated), {"date_taken": date_taken, **result}
